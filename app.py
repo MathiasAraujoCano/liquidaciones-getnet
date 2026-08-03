@@ -69,9 +69,10 @@ def guardar_registro(rows, sha):
 st.set_page_config(page_title="Liquidaciones Getnet → Excel", page_icon="📄")
 st.title("Liquidaciones Getnet → Excel")
 st.write(
-    "Subí uno o varios PDF de liquidación Getnet. Cada documento se procesa "
-    "por separado (no se mezclan datos entre liquidaciones) y se combinan "
-    "todos en un único Excel para descargar."
+    "Subí uno o varios PDF de liquidación Getnet (podés ir agregando de a "
+    "uno, o seleccionar varios juntos). Cuando termines, apretá **Generar "
+    "Excel**. Cada documento se procesa por separado (no se mezclan datos "
+    "entre liquidaciones) y se combinan todos en un único Excel."
 )
 
 if not MODO_GITHUB:
@@ -104,9 +105,10 @@ archivos = st.file_uploader(
 )
 
 if archivos:
-    # 1) Parsear y armar las filas es puro (no escribe nada): se puede hacer
-    #    apenas se sube el archivo, sin esperar ningún click, y avisar de
-    #    entrada si hay duplicados contra el registro.
+    # Parsear y armar las filas es puro (no escribe nada): se recalcula en
+    # cada interacción para mostrar de entrada el resumen y avisar
+    # duplicados, sin esperar ningún click ni bloquear que se sigan
+    # agregando más PDFs al mismo lote.
     parsed = []
     parse_errores = []
     for archivo in archivos:
@@ -143,11 +145,9 @@ if archivos:
     listos = bool(parsed) and all(d["establecimiento"] in cfg_completo for _, d in parsed)
 
     if parsed and not listos:
-        st.info("Completá los datos de establecimiento de arriba para generar el Excel.")
+        st.info("Completá los datos de establecimiento de arriba para poder generar el Excel.")
 
     if listos:
-        # 2) Se arman las filas y se avisan los duplicados ya (sin efectos
-        #    secundarios todavía) para que se vea apenas se sube el archivo.
         all_rows = []
         warnings = []
         resumen = []
@@ -163,14 +163,14 @@ if archivos:
             if nrodoc in vistos:
                 warnings.append(
                     f"{nombre}: la liquidación Nº {nrodoc} ya fue cargada en este "
-                    f"mismo lote desde '{vistos[nrodoc]}'. Se agregó igual."
+                    f"mismo lote desde '{vistos[nrodoc]}'. Se agregará igual."
                 )
             elif nrodoc in nrodocs_previos:
                 prev = nrodocs_previos[nrodoc]
                 warnings.append(
                     f"{nombre}: la liquidación Nº {nrodoc} ya había sido cargada "
                     f"antes ({prev['FechaCarga']}, archivo '{prev['Archivo']}'). "
-                    f"Se generó igual, revisá que no sea un duplicado."
+                    f"Revisá que no sea un duplicado antes de generar."
                 )
             vistos[nrodoc] = nombre
 
@@ -186,7 +186,7 @@ if archivos:
                 "Filas": len(rows),
             })
 
-        st.subheader("Resumen")
+        st.subheader(f"Resumen ({len(parsed)} archivo{'s' if len(parsed) != 1 else ''} cargado{'s' if len(parsed) != 1 else ''})")
         st.table({
             "Archivo": [r[0] for r in resumen],
             "Nº Liquidación": [r[1] for r in resumen],
@@ -196,11 +196,14 @@ if archivos:
         for w in warnings:
             st.warning(w)
 
-        # 3) Esto sí es un efecto secundario real (Excel + commit al
-        #    registro) y tiene que pasar una sola vez por lote. Se dispara
-        #    automáticamente (sin botón), y apenas termina vacía el uploader
-        #    para que un rerun posterior (ej. al descargar) no lo repita.
-        if all_rows:
+        st.caption("¿Falta algún PDF? Agregalo arriba (📎) antes de generar. "
+                    "Cuando esté completo el lote, generá el Excel:")
+
+        # Esto sí es un efecto secundario real (Excel + commit al registro) y
+        # tiene que pasar una sola vez por lote -> requiere un click
+        # explícito, así podés seguir sumando archivos antes de generar y no
+        # se dispara solo ni se vacía la carga antes de que quieras.
+        if all_rows and st.button("Generar Excel", type="primary"):
             buffer = BytesIO()
             write_excel(all_rows, buffer)
             excel_bytes = buffer.getvalue()
@@ -219,6 +222,7 @@ if archivos:
                 "total_filas": len(all_rows),
                 "registro_ok": registro_ok,
             }
+            # Vaciamos el área de carga recién ahora, para la próxima liquidación.
             st.session_state.uploader_version += 1
             st.rerun()
 
@@ -234,6 +238,6 @@ if resultado and not archivos:
     if resultado["registro_ok"]:
         st.caption("Registro actualizado ✓")
 
-    if st.button("Empezar de nuevo"):
+    if st.button("Cargar otra liquidación"):
         st.session_state.resultado = None
         st.rerun()
