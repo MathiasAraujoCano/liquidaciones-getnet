@@ -69,7 +69,9 @@ def guardar_registro(rows, sha):
 st.set_page_config(page_title="Liquidaciones Getnet → Excel", page_icon="📄")
 st.title("Liquidaciones Getnet → Excel")
 st.write(
-    "Subí uno o varios PDF de liquidación Getnet."
+    "Subí uno o varios PDF de liquidación Getnet. Cada documento se procesa "
+    "por separado (no se mezclan datos entre liquidaciones) y se combinan "
+    "todos en un único Excel para descargar."
 )
 
 if not MODO_GITHUB:
@@ -79,9 +81,6 @@ if not MODO_GITHUB:
         "`github_owner` y `github_repo` para que sea permanente. Ver DEPLOY.md."
     )
 
-# Estado de la sesión: versión del uploader (para poder "vaciarlo" a demanda)
-# y el último resultado generado (para que sobreviva a los reruns que
-# dispara, por ejemplo, el propio botón de descarga).
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0
 if "resultado" not in st.session_state:
@@ -105,6 +104,9 @@ archivos = st.file_uploader(
 )
 
 if archivos:
+    # 1) Parsear y armar las filas es puro (no escribe nada): se puede hacer
+    #    apenas se sube el archivo, sin esperar ningún click, y avisar de
+    #    entrada si hay duplicados contra el registro.
     parsed = []
     parse_errores = []
     for archivo in archivos:
@@ -143,11 +145,9 @@ if archivos:
     if parsed and not listos:
         st.info("Completá los datos de establecimiento de arriba para generar el Excel.")
 
-    # El procesamiento (y el guardado en el registro) solo ocurre cuando se
-    # aprieta este botón explícitamente - así un rerun de Streamlit disparado
-    # por otra interacción (ej. el botón de descarga) no vuelve a procesar ni
-    # a registrar el mismo archivo dos veces.
-    if listos and st.button("Generar Excel", type="primary"):
+    if listos:
+        # 2) Se arman las filas y se avisan los duplicados ya (sin efectos
+        #    secundarios todavía) para que se vea apenas se sube el archivo.
         all_rows = []
         warnings = []
         resumen = []
@@ -186,7 +186,20 @@ if archivos:
                 "Filas": len(rows),
             })
 
-        excel_bytes = None
+        st.subheader("Resumen")
+        st.table({
+            "Archivo": [r[0] for r in resumen],
+            "Nº Liquidación": [r[1] for r in resumen],
+            "Establecimiento": [r[2] for r in resumen],
+            "Filas generadas": [r[3] for r in resumen],
+        })
+        for w in warnings:
+            st.warning(w)
+
+        # 3) Esto sí es un efecto secundario real (Excel + commit al
+        #    registro) y tiene que pasar una sola vez por lote. Se dispara
+        #    automáticamente (sin botón), y apenas termina vacía el uploader
+        #    para que un rerun posterior (ej. al descargar) no lo repita.
         if all_rows:
             buffer = BytesIO()
             write_excel(all_rows, buffer)
@@ -194,41 +207,31 @@ if archivos:
             try:
                 registro_actualizado = registro_rows + nuevas_entradas_registro
                 guardar_registro(registro_actualizado, registro_sha)
+                registro_ok = True
             except Exception as e:
                 warnings.append(f"No se pudo guardar el registro: {e}")
+                registro_ok = False
 
-        st.session_state.resultado = {
-            "resumen": resumen,
-            "warnings": warnings,
-            "excel_bytes": excel_bytes,
-            "total_filas": len(all_rows),
-        }
-        # Vaciamos el área de carga para que quede lista para la próxima
-        # liquidación (evita que quede un PDF "olvidado" ahí).
-        st.session_state.uploader_version += 1
-        st.rerun()
+            st.session_state.resultado = {
+                "resumen": resumen,
+                "warnings": warnings,
+                "excel_bytes": excel_bytes,
+                "total_filas": len(all_rows),
+                "registro_ok": registro_ok,
+            }
+            st.session_state.uploader_version += 1
+            st.rerun()
 
 resultado = st.session_state.resultado
-if resultado:
-    st.subheader("Resumen")
-    st.table({
-        "Archivo": [r[0] for r in resultado["resumen"]],
-        "Nº Liquidación": [r[1] for r in resultado["resumen"]],
-        "Establecimiento": [r[2] for r in resultado["resumen"]],
-        "Filas generadas": [r[3] for r in resultado["resumen"]],
-    })
-
-    for w in resultado["warnings"]:
-        st.warning(w)
-
-    if resultado["excel_bytes"]:
-        st.success(f"Listo: {resultado['total_filas']} filas en total.")
-        st.download_button(
-            "Descargar Excel combinado",
-            data=resultado["excel_bytes"],
-            file_name="liquidaciones_combinadas.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+if resultado and not archivos:
+    st.success(f"Listo: {resultado['total_filas']} filas en total.")
+    st.download_button(
+        "Descargar Excel combinado",
+        data=resultado["excel_bytes"],
+        file_name="liquidaciones_combinadas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    if resultado["registro_ok"]:
         st.caption("Registro actualizado ✓")
 
     if st.button("Empezar de nuevo"):
