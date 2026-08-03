@@ -79,6 +79,14 @@ if not MODO_GITHUB:
         "`github_owner` y `github_repo` para que sea permanente. Ver DEPLOY.md."
     )
 
+# Estado de la sesión: versión del uploader (para poder "vaciarlo" a demanda)
+# y el último resultado generado (para que sobreviva a los reruns que
+# dispara, por ejemplo, el propio botón de descarga).
+if "uploader_version" not in st.session_state:
+    st.session_state.uploader_version = 0
+if "resultado" not in st.session_state:
+    st.session_state.resultado = None
+
 registro_rows, registro_sha = cargar_registro()
 nrodocs_previos = {r["NRODOC"]: r for r in registro_rows}
 
@@ -92,7 +100,8 @@ with st.expander(f"Historial de liquidaciones ya cargadas ({len(registro_rows)})
 cfg = load_establecimientos(CONFIG_PATH) if CONFIG_PATH.exists() else {}
 
 archivos = st.file_uploader(
-    "PDFs de liquidación", type=["pdf"], accept_multiple_files=True
+    "PDFs de liquidación", type=["pdf"], accept_multiple_files=True,
+    key=f"uploader_{st.session_state.uploader_version}",
 )
 
 if archivos:
@@ -129,9 +138,16 @@ if archivos:
                 }
 
     cfg_completo = {**cfg, **fijos_sesion}
-    listos = all(d["establecimiento"] in cfg_completo for _, d in parsed)
+    listos = bool(parsed) and all(d["establecimiento"] in cfg_completo for _, d in parsed)
 
-    if parsed and listos:
+    if parsed and not listos:
+        st.info("Completá los datos de establecimiento de arriba para generar el Excel.")
+
+    # El procesamiento (y el guardado en el registro) solo ocurre cuando se
+    # aprieta este botón explícitamente - así un rerun de Streamlit disparado
+    # por otra interacción (ej. el botón de descarga) no vuelve a procesar ni
+    # a registrar el mismo archivo dos veces.
+    if listos and st.button("Generar Excel", type="primary"):
         all_rows = []
         warnings = []
         resumen = []
@@ -170,36 +186,51 @@ if archivos:
                 "Filas": len(rows),
             })
 
-        st.subheader("Resumen")
-        st.table(
-            {
-                "Archivo": [r[0] for r in resumen],
-                "Nº Liquidación": [r[1] for r in resumen],
-                "Establecimiento": [r[2] for r in resumen],
-                "Filas generadas": [r[3] for r in resumen],
-            }
-        )
-
-        for w in warnings:
-            st.warning(w)
-
+        excel_bytes = None
         if all_rows:
             buffer = BytesIO()
             write_excel(all_rows, buffer)
-            buffer.seek(0)
-            st.success(f"Listo: {len(all_rows)} filas en total.")
-            st.download_button(
-                "Descargar Excel combinado",
-                data=buffer,
-                file_name="liquidaciones_combinadas.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
+            excel_bytes = buffer.getvalue()
             try:
                 registro_actualizado = registro_rows + nuevas_entradas_registro
                 guardar_registro(registro_actualizado, registro_sha)
-                st.caption("Registro actualizado ✓")
             except Exception as e:
-                st.error(f"No se pudo guardar el registro: {e}")
-    elif parsed and not listos:
-        st.info("Completá los datos de establecimiento de arriba para generar el Excel.")
+                warnings.append(f"No se pudo guardar el registro: {e}")
+
+        st.session_state.resultado = {
+            "resumen": resumen,
+            "warnings": warnings,
+            "excel_bytes": excel_bytes,
+            "total_filas": len(all_rows),
+        }
+        # Vaciamos el área de carga para que quede lista para la próxima
+        # liquidación (evita que quede un PDF "olvidado" ahí).
+        st.session_state.uploader_version += 1
+        st.rerun()
+
+resultado = st.session_state.resultado
+if resultado:
+    st.subheader("Resumen")
+    st.table({
+        "Archivo": [r[0] for r in resultado["resumen"]],
+        "Nº Liquidación": [r[1] for r in resultado["resumen"]],
+        "Establecimiento": [r[2] for r in resultado["resumen"]],
+        "Filas generadas": [r[3] for r in resultado["resumen"]],
+    })
+
+    for w in resultado["warnings"]:
+        st.warning(w)
+
+    if resultado["excel_bytes"]:
+        st.success(f"Listo: {resultado['total_filas']} filas en total.")
+        st.download_button(
+            "Descargar Excel combinado",
+            data=resultado["excel_bytes"],
+            file_name="liquidaciones_combinadas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.caption("Registro actualizado ✓")
+
+    if st.button("Empezar de nuevo"):
+        st.session_state.resultado = None
+        st.rerun()
