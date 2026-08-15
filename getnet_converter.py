@@ -167,9 +167,14 @@ def build_rows(data, fijos):
     iva_ajuste_total = 0.0
     for aj in data["ajustes"]:
         desc = _norm(aj["descripcion"])
-        if "retenc" in desc:
+        if "compensac" in desc:
+            # Las "Compensación" son movimientos internos que se anulan entre
+            # sí (ver Detalle de Ajustes del PDF) y deben ignorarse por
+            # completo: ni se suman ni se restan de ningún PLAN.
+            continue
+        if re.search(r"\bretenc", desc):
             retencion_total += abs(aj["importe"])
-        elif "iva" in desc:
+        elif re.search(r"\biva\b", desc):
             iva_ajuste_total += abs(aj["importe"])
         else:
             warnings.append(
